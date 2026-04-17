@@ -4,13 +4,7 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.ui.Modifier
-import androidx.compose.ui.tooling.preview.Preview
+import com.veera.scammessagedetector.ui.ScamDetectorScreen
 import com.veera.scammessagedetector.ui.theme.ScamMessageDetectorTheme
 
 class MainActivity : ComponentActivity() {
@@ -19,29 +13,10 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         setContent {
             ScamMessageDetectorTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    Greeting(
-                        name = "Android",
-                        modifier = Modifier.padding(innerPadding)
-                    )
-                }
+                // Call your new screen here directly!
+                // Claude's code already includes a Scaffold to handle padding.
+                ScamDetectorScreen()
             }
         }
-    }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-    Text(
-        text = "Hello $name!",
-        modifier = modifier
-    )
-}
-
-@Preview(showBackground = true)
-@Composable
-fun GreetingPreview() {
-    ScamMessageDetectorTheme {
-        Greeting("Android")
     }
 }
