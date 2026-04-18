@@ -1,11 +1,11 @@
 # Gen Digital Intern Assignment: Scam Message Detector 🛡️
 
 **Candidate:** Veera Venkata Satyanarayana Nargana
-[cite_start]**Option Selected:** Option B (Scam Message Detector Prototype) [cite: 102]
+**Option Selected:** Option B (Scam Message Detector Prototype)
 **Tech Stack:** Kotlin, Jetpack Compose, MVVM Architecture
 
 ## Project Overview
-[cite_start]This project is an AI-driven scam message detector built for the Gen Digital AI-First Mobile Engineering Intern take-home assignment[cite: 54, 103]. [cite_start]It allows users to paste suspicious messages or URLs and receive a simulated AI risk assessment (Safe / Suspicious / Dangerous) along with a confidence score[cite: 109].
+This project is an AI-driven scam message detector built for the Gen Digital AI-First Mobile Engineering Intern take-home assignment[cite: 54, 103]. [cite_start]It allows users to paste suspicious messages or URLs and receive a simulated AI risk assessment (Safe / Suspicious / Dangerous) along with a confidence score[cite: 109].
 
 ## Setup Instructions
 1. Clone this repository.
@@ -15,9 +15,9 @@
 
 ---
 
-## [cite_start]AI Interaction Log [cite: 116]
+## AI Interaction Log
 
-[cite_start]**AI Assistant Used:** Claude [cite: 115]
+**AI Assistant Used:** Claude
 
 ### Entry 1: Project Scaffolding and Foundational UI
 * **Goal:** Generate the initial Jetpack Compose UI and ViewModel state architecture before wiring up complex logic.
