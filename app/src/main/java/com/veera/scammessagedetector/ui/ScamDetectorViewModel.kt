@@ -15,59 +15,244 @@ import kotlinx.coroutines.launch
 // UI State — sealed hierarchy
 // ---------------------------------------------------------------------------
 
-/**
- * Exhaustive model of every state the screen can be in.
- *
- * Prefer a sealed class over a single data class with nullable fields.
- * This forces the UI layer to handle every branch explicitly and eliminates
- * impossible state combinations (e.g., loading = true AND result != null).
- */
 sealed class ScamDetectorUiState {
-
-    /** Nothing has happened yet; the input field is empty or untouched. */
     data object Idle : ScamDetectorUiState()
-
-    /** Analysis is in-flight; show a progress indicator, disable the button. */
     data object Loading : ScamDetectorUiState()
-
-    /**
-     * Analysis completed successfully.
-     *
-     * @param inputText  Echo back what was analyzed so the UI can display it.
-     * @param result     The analysis verdict from the engine.
-     */
     data class Success(
         val inputText: String,
         val result: AnalysisResult,
     ) : ScamDetectorUiState()
-
-    /**
-     * Something went wrong (network failure, API error, empty input, etc.).
-     *
-     * @param message  User-facing error message — never expose raw stack traces here.
-     */
     data class Error(val message: String) : ScamDetectorUiState()
 }
 
 // ---------------------------------------------------------------------------
-// Example messages — defined in the ViewModel, not hardcoded in the UI.
-//
-// Keeping this data here means the UI is trivially testable (no magic strings
-// scattered through composables) and examples can later be loaded from a
-// remote config or repository without touching the screen at all.
+// Example messages
 // ---------------------------------------------------------------------------
 
-/**
- * A pre-canned scam sample the user can tap to auto-populate the input.
- *
- * @param label       Short category label shown on the card header (e.g. "Package Delivery").
- * @param senderHint  Spoofed sender string that makes the scam feel realistic.
- * @param body        The full scam message text that populates the input field.
- */
 data class ExampleMessage(
     val label: String,
     val senderHint: String,
     val body: String,
+)
+
+// ===========================================================================
+//  LOCAL HEURISTIC ANALYSIS ENGINE
+//
+//  Design principles:
+//   1. Rules are data, not code. Each Rule is a plain object with a Regex
+//      and metadata. Adding a new signal = adding one item to RULES.
+//   2. Scoring is category-deduped: a message with 10 synonyms for "URGENT"
+//      scores the same as one — each *category* contributes once.
+//   3. Display tokens are instance-deduped: the chip list never repeats
+//      the same string, even if the Regex matched at multiple positions.
+//   4. Confidence is bounded [0, 1] via coerceIn, with a small BASE_SCORE
+//      so a clean message displays as ~5% instead of 0%.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Severity tier
+// ---------------------------------------------------------------------------
+
+/**
+ * Calibrated so representative inputs produce sensible verdicts:
+ *
+ *   1 HIGH alone            → ~0.45  → SUSPICIOUS
+ *   2 HIGH                  → ~0.85  → DANGEROUS
+ *   1 HIGH + 1 MEDIUM       → ~0.70  → DANGEROUS
+ *   1 MEDIUM alone          → ~0.30  → SUSPICIOUS
+ *   2 MEDIUM                → ~0.55  → SUSPICIOUS
+ *   3 MEDIUM                → ~0.80  → DANGEROUS
+ *   1–2 LOW                 → ~0.15–0.25 → SAFE
+ *   3 LOW                   → ~0.35  → SUSPICIOUS
+ */
+private enum class Severity(val weight: Float) {
+    HIGH(0.40f),    // near-certain scam signal on its own
+    MEDIUM(0.25f),  // strong contextual signal; meaningful in combination
+    LOW(0.10f),     // weak signal; only significant when clustered
+}
+
+// ---------------------------------------------------------------------------
+// Rule definition
+// ---------------------------------------------------------------------------
+
+/**
+ * A single detection rule.
+ *
+ * @param category  Human-readable group name used to deduplicate scoring
+ *                  (only 1 hit per category toward the confidence score)
+ *                  and to build the explanation string.
+ * @param severity  Determines the weight added when this category fires.
+ * @param pattern   Compiled Regex matched against the full input text.
+ * @param tokenize  Converts a MatchResult to the string shown in the UI chip.
+ *                  Default: matched substring, lowercased and trimmed.
+ */
+private data class Rule(
+    val category: String,
+    val severity: Severity,
+    val pattern: Regex,
+    val tokenize: (MatchResult) -> String = { it.value.lowercase().trim() },
+)
+
+// ---------------------------------------------------------------------------
+// Internal match record
+// ---------------------------------------------------------------------------
+
+private data class MatchedIndicator(
+    val displayToken: String,
+    val category: String,
+    val severity: Severity,
+)
+
+// ---------------------------------------------------------------------------
+// Engine constants
+// ---------------------------------------------------------------------------
+
+private const val BASE_SCORE           = 0.05f
+private const val THRESHOLD_SUSPICIOUS = 0.25f
+private const val THRESHOLD_DANGEROUS  = 0.60f
+
+// ---------------------------------------------------------------------------
+// Rule catalogue
+// ---------------------------------------------------------------------------
+
+/**
+ * Complete catalogue of detection rules, ordered HIGH → MEDIUM → LOW.
+ * Within each tier, more-specific rules come first so that distinctBy on
+ * displayToken keeps the most informative label when patterns overlap.
+ */
+private val RULES: List<Rule> = listOf(
+
+    // ── HIGH — near-certain scam signals ────────────────────────────────────
+
+    Rule(
+        category = "Shortened URL",
+        severity = Severity.HIGH,
+        pattern = Regex(
+            pattern = """https?://(bit\.ly|tinyurl\.com|t\.co|goo\.gl|ow\.ly|is\.gd""" +
+                    """|buff\.ly|shorturl\.at|cutt\.ly|rb\.gy|tiny\.cc|lnkd\.in""" +
+                    """|dlvr\.it|su\.pr|tr\.im|v\.gd|b\.link|short\.io)/\S*""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+        tokenize = { match ->
+            val host = match.value.substringAfter("://").substringBefore("/")
+            "Shortened URL ($host)"
+        },
+    ),
+
+    Rule(
+        category = "Raw IP Address in URL",
+        severity = Severity.HIGH,
+        pattern = Regex(
+            pattern = """https?://(\d{1,3}\.){3}\d{1,3}(/\S*)?""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+        tokenize = { match ->
+            val ip = match.value.substringAfter("://").substringBefore("/")
+            "IP-based URL ($ip)"
+        },
+    ),
+
+    Rule(
+        category = "Suspicious Domain",
+        severity = Severity.HIGH,
+        pattern = Regex(
+            pattern = """https?://[^\s/]*[-_](secure|verify|login|update|alert|account""" +
+                    """|banking|support|confirm|validation|access|signin|recover)[^\s/]*\.[a-z]{2,6}(/\S*)?""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+        tokenize = { match ->
+            val domain = match.value.substringAfter("://").substringBefore("/")
+            "Suspicious domain ($domain)"
+        },
+    ),
+
+    // ── MEDIUM — strong contextual signals ──────────────────────────────────
+
+    Rule(
+        category = "Urgency Language",
+        severity = Severity.MEDIUM,
+        pattern = Regex(
+            pattern = """\b(urgent|immediately|act now|right away|right now|asap""" +
+                    """|within \d+ (hr|hour|min|minute)s?|expires? (soon|today|in \d+)""" +
+                    """|limited time|final (warning|notice)|last chance|deadline (today|tonight))\b""",
+            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        ),
+    ),
+
+    Rule(
+        category = "Account Threat",
+        severity = Severity.MEDIUM,
+        pattern = Regex(
+            pattern = """\b(suspend(ed|ing|ion)?|block(ed|ing)?|restrict(ed|ing|ion)?""" +
+                    """|terminat(ed|ing|ion)?|disabl(ed|ing)?|clos(ed|ing)?""" +
+                    """|lock(ed|ing|out)?|unauthori[sz]ed (access|activity|login))\b""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+    ),
+
+    Rule(
+        category = "Credential Phishing",
+        severity = Severity.MEDIUM,
+        pattern = Regex(
+            pattern = """\b(password|credentials?""" +
+                    """|verify (your )?(identity|account|details?|information)""" +
+                    """|confirm (your )?(identity|account|details?|information)""" +
+                    """|validate (your )?(account|identity|details?)""" +
+                    """|provide (your )?(details?|information|credentials?|bank|card))\b""",
+            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
+        ),
+    ),
+
+    Rule(
+        category = "Suspicious TLD",
+        severity = Severity.MEDIUM,
+        pattern = Regex(
+            pattern = """https?://[^\s]+\.(xyz|top|click|loan|pw|cc|tk|ml|ga|cf|gq""" +
+                    """|work|online|site|website|tech|club|info|biz|live|shop|stream)(/\S*)?""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+        tokenize = { match ->
+            val tld = match.value.substringBeforeLast("/").substringAfterLast(".").take(8)
+            "Suspicious TLD (.$tld)"
+        },
+    ),
+
+    // ── LOW — weak signals, significant only when clustered ─────────────────
+
+    Rule(
+        category = "Phishing Call-to-Action",
+        severity = Severity.LOW,
+        pattern = Regex(
+            pattern = """\b(click here|click (the |this |on the |on this )?link""" +
+                    """|tap here|tap (the |this )?link|follow (this |the )?link""" +
+                    """|open (this |the )?link|download now|install now|get it now)\b""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+    ),
+
+    Rule(
+        category = "Financial Bait",
+        severity = Severity.LOW,
+        pattern = Regex(
+            pattern = """\b(you('ve| have) won|congratulations you|prize|lottery""" +
+                    """|reward|claim (your|the)|free gift|cash prize""" +
+                    """|transfer funds?|wire transfer|money transfer|inheritance)\b""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+    ),
+
+    Rule(
+        category = "Impersonation Language",
+        severity = Severity.LOW,
+        pattern = Regex(
+            pattern = """\b(dear (customer|user|account.?holder|member|client|valued)""" +
+                    """|official (notice|alert|message|communication)""" +
+                    """|security (team|alert|department|notification)""" +
+                    """|customer (care|support|service)( (team|department))?""" +
+                    """|helpdesk|help desk)\b""",
+            option = RegexOption.IGNORE_CASE,
+        ),
+    ),
 )
 
 // ---------------------------------------------------------------------------
@@ -76,22 +261,12 @@ data class ExampleMessage(
 
 class ScamDetectorViewModel : ViewModel() {
 
-    // Backing property is private — only the VM can mutate state.
     private val _uiState = MutableStateFlow<ScamDetectorUiState>(ScamDetectorUiState.Idle)
-
-    /** Exposed as an immutable StateFlow; the Compose UI collects this. */
     val uiState: StateFlow<ScamDetectorUiState> = _uiState.asStateFlow()
 
-    // Keep the input text in a separate StateFlow so the text field
-    // can survive config changes independently of the analysis result.
     private val _inputText = MutableStateFlow("")
     val inputText: StateFlow<String> = _inputText.asStateFlow()
 
-    /**
-     * Immutable list of curated example scam messages.
-     * Exposed directly (not as a Flow) because it never changes at runtime.
-     * Add new examples here as the corpus grows.
-     */
     val exampleMessages: List<ExampleMessage> = listOf(
         ExampleMessage(
             label = "Package Delivery",
@@ -109,14 +284,8 @@ class ScamDetectorViewModel : ViewModel() {
         ),
     )
 
-    /**
-     * Called by the UI on every keystroke in the text field.
-     * Also resets any prior result/error so stale output doesn't linger
-     * while the user is editing a new message.
-     */
     fun onInputChanged(newText: String) {
         _inputText.update { newText }
-        // Clear result pane as soon as the user starts editing again.
         if (_uiState.value is ScamDetectorUiState.Success ||
             _uiState.value is ScamDetectorUiState.Error
         ) {
@@ -124,82 +293,198 @@ class ScamDetectorViewModel : ViewModel() {
         }
     }
 
-    /**
-     * Called when the user taps an example card.
-     *
-     * Deliberately delegates to [onInputChanged] so all the reset-on-edit
-     * logic lives in exactly one place. The UI just fires this event and
-     * doesn't need to think about side effects.
-     */
     fun onExampleSelected(example: ExampleMessage) {
         onInputChanged(example.body)
     }
 
-    /**
-     * Entry point for the "Analyze" button.
-     *
-     * Current implementation: simulates a 2-second network call and returns
-     * a hardcoded Suspicious result.
-     *
-     * Step 3 TODO: Replace the body of [performAnalysis] with a real
-     * repository call (e.g., `repository.analyze(text)`) and remove the
-     * hardcoded result. The state machine and error handling remain unchanged.
-     */
     fun analyzeMessage() {
         val text = _inputText.value.trim()
-
         if (text.isBlank()) {
             _uiState.update {
                 ScamDetectorUiState.Error("Please paste a message or URL to analyze.")
             }
             return
         }
-
         viewModelScope.launch {
             _uiState.update { ScamDetectorUiState.Loading }
             performAnalysis(text)
         }
     }
 
-    /** Reset the screen back to its initial state. */
     fun reset() {
         _inputText.update { "" }
         _uiState.update { ScamDetectorUiState.Idle }
     }
 
-    // ---------------------------------------------------------------------------
-    // Private helpers
-    // ---------------------------------------------------------------------------
+    // -------------------------------------------------------------------------
+    // Analysis pipeline
+    // -------------------------------------------------------------------------
 
     /**
-     * Stub analysis — will be replaced with a real API/ML call in Step 3.
+     * Wraps [analyzeText] with the simulated network delay and state transitions.
      *
-     * Wraps the result in a try/catch so any future repository can throw and
-     * the state machine will transition cleanly to [ScamDetectorUiState.Error].
+     * The 2-second delay mirrors real API latency so the Loading state is
+     * always exercised during manual testing. Remove it when connecting a
+     * real backend.
      */
     private suspend fun performAnalysis(text: String) {
         try {
-            // --- Simulated network latency ---
             delay(2_000L)
-
-            // --- Hardcoded stub result ---
-            val stubbedResult = AnalysisResult(
-                riskLevel = RiskLevel.SUSPICIOUS,
-                confidence = 0.78f,
-                explanation = "This message contains several hallmarks of phishing attempts: " +
-                        "an urgent call-to-action, a mismatched sender domain, and a " +
-                        "shortened URL that obscures the true destination.",
-                flaggedTokens = listOf("urgent", "click here", "bit.ly/3xFk91")
-            )
-
+            val result = analyzeText(text)
             _uiState.update {
-                ScamDetectorUiState.Success(inputText = text, result = stubbedResult)
+                ScamDetectorUiState.Success(inputText = text, result = result)
             }
         } catch (e: Exception) {
             _uiState.update {
                 ScamDetectorUiState.Error(
                     message = "Analysis failed: ${e.localizedMessage ?: "Unknown error"}"
                 )
+            }
+        }
+    }
+
+    /**
+     * Core heuristic engine — a pure function with no side-effects.
+     * Can be extracted and unit-tested independently of the ViewModel.
+     *
+     * Pipeline:
+     *  1. Run every Rule against the text to collect all MatchedIndicators.
+     *  2. Deduplicate display tokens  → [uniqueHits]   (for chip list).
+     *  3. Deduplicate by category     → [scoringHits]  (for confidence score).
+     *  4. Sum weighted scores → clamp to [0, 1] → [confidence].
+     *  5. Map confidence to RiskLevel via fixed thresholds.
+     *  6. Build a dynamic explanation from the categorised hits.
+     */
+    private fun analyzeText(text: String): AnalysisResult {
+
+        // 1. Collect every match across all rules.
+        val allHits: List<MatchedIndicator> = RULES.flatMap { rule ->
+            rule.pattern.findAll(text).map { match ->
+                MatchedIndicator(
+                    displayToken = rule.tokenize(match),
+                    category     = rule.category,
+                    severity     = rule.severity,
+                )
+            }
+        }
+
+        // 2. Deduplicate tokens for the chip list (case-insensitive).
+        val uniqueHits: List<MatchedIndicator> =
+            allHits.distinctBy { it.displayToken.lowercase() }
+
+        // 3. Deduplicate by category for scoring.
+        //    One noisy Regex can't inflate the score by matching the same
+        //    category 50 times in a single message.
+        val scoringHits: List<MatchedIndicator> =
+            allHits.distinctBy { it.category }
+
+        // 4. Confidence score.
+        val rawScore = BASE_SCORE +
+                scoringHits.sumOf { it.severity.weight.toDouble() }.toFloat()
+        val confidence = rawScore.coerceIn(0f, 1f)
+
+        // 5. Risk level thresholds.
+        val riskLevel = when {
+            confidence >= THRESHOLD_DANGEROUS  -> RiskLevel.DANGEROUS
+            confidence >= THRESHOLD_SUSPICIOUS -> RiskLevel.SUSPICIOUS
+            else                               -> RiskLevel.SAFE
+        }
+
+        // 6. Assemble result.
+        val flaggedTokens = uniqueHits.map { it.displayToken }
+        val explanation   = buildExplanation(riskLevel, scoringHits)
+
+        return AnalysisResult(
+            riskLevel     = riskLevel,
+            confidence    = confidence,
+            explanation   = explanation,
+            flaggedTokens = flaggedTokens,
+        )
+    }
+
+    /**
+     * Builds a human-readable explanation from the scored hits.
+     *
+     * Structure:
+     *   • Opening verdict sentence (varies by risk level).
+     *   • HIGH findings — listed individually; each is a critical signal.
+     *   • MEDIUM findings — grouped as "supporting indicators".
+     *   • LOW findings — grouped as "minor signals".
+     *   • Total indicator count.
+     *   • Closing advice appropriate to the risk level.
+     */
+    private fun buildExplanation(
+        riskLevel: RiskLevel,
+        scoringHits: List<MatchedIndicator>,
+    ): String {
+
+        if (scoringHits.isEmpty()) {
+            return "No scam indicators were detected. The message contains no " +
+                    "urgency language, account threats, suspicious links, or " +
+                    "credential requests. Always stay cautious with unsolicited messages."
+        }
+
+        val highHits   = scoringHits.filter { it.severity == Severity.HIGH }
+        val mediumHits = scoringHits.filter { it.severity == Severity.MEDIUM }
+        val lowHits    = scoringHits.filter { it.severity == Severity.LOW }
+
+        return buildString {
+
+            // Opening verdict
+            when (riskLevel) {
+                RiskLevel.DANGEROUS ->
+                    append("This message exhibits multiple strong indicators of a phishing or scam attack. ")
+                RiskLevel.SUSPICIOUS ->
+                    append("This message contains patterns commonly associated with scam attempts. ")
+                RiskLevel.SAFE ->
+                    append("This message has minor signals worth noting, though none are conclusive on their own. ")
+            }
+
+            // HIGH findings — named individually because each is critical alone
+            if (highHits.isNotEmpty()) {
+                val plural = if (highHits.size > 1) "s" else ""
+                val labels = highHits.joinToString(" and ") { it.category.lowercase() }
+                append("Critical signal$plural detected: $labels. ")
+            }
+
+            // MEDIUM findings
+            if (mediumHits.isNotEmpty()) {
+                val plural = if (mediumHits.size > 1) "s" else ""
+                val labels = mediumHits.joinToString(", ") { it.category.lowercase() }
+                append("Supporting indicator$plural: $labels. ")
+            }
+
+            // LOW findings
+            if (lowHits.isNotEmpty()) {
+                val plural = if (lowHits.size > 1) "s" else ""
+                val labels = lowHits.joinToString(", ") { it.category.lowercase() }
+                append("Weaker signal$plural also present: $labels. ")
+            }
+
+            // Indicator count summary
+            val total = scoringHits.size
+            val verb  = if (total > 1) "were" else "was"
+            append("$total unique indicator${if (total > 1) "s" else ""} $verb matched. ")
+
+            // Closing advice
+            when (riskLevel) {
+                RiskLevel.DANGEROUS ->
+                    append(
+                        "Do not click any links or provide personal information. " +
+                                "If this appears to be from a known organisation, contact them " +
+                                "directly via their official website or phone number."
+                    )
+                RiskLevel.SUSPICIOUS ->
+                    append(
+                        "Treat this message with caution. Verify the sender " +
+                                "through an official channel before clicking any links " +
+                                "or sharing personal details."
+                    )
+                RiskLevel.SAFE ->
+                    append(
+                        "Even messages with few signals can be scams if they feel " +
+                                "unexpected or request sensitive information."
+                    )
             }
         }
     }
