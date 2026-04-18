@@ -29,6 +29,10 @@
 * **Prompt:** "The foundational UI is running perfectly on the emulator! Let's tackle Step 2. The take-home assignment requires: 'Show at least 2 example scam messages the user can tap to auto-populate the input field.' Please update the `ScamDetectorContent` composable to include a visually distinct section (like suggestion chips or selectable, horizontal scrolling cards) containing two example scam messages... Place this section just above the text input field. When clicked, these examples must trigger an event to update the `inputText` StateFlow in the ViewModel."
 * **Result / Refinement:** Claude generated a highly scalable solution by placing the `ExampleMessage` domain data directly into the ViewModel rather than hardcoding it into the UI. It utilized a `LazyRow` for horizontal scrolling and derived the selected state natively from the `inputText` StateFlow to prevent stale states. I successfully routed the new components into my existing `ui` and `model` packages.
 
-### Entry 3: [Pending]
+### Entry 3: Core Analysis Engine (Local Heuristics)
+* **Goal:** Fulfill the requirement to analyze text and return a risk level, confidence score, and explanation without requiring the reviewer to inject personal API keys.
+* **Prompt:** "Our example messages are working perfectly! Now we need to tackle the core logic. Please replace the hardcoded stub inside the `performAnalysis` function in the `ScamDetectorViewModel` with a local heuristic/regex-based analysis engine. Requirements: 1. Create a private function `analyzeText`... 2. Check for common scam indicators... 3. Calculate a realistic `confidence` score and assign a `RiskLevel`... 4. Generate a dynamic `explanation`... 5. Populate `flaggedTokens`... 6. Keep the simulated 2-second network delay."
+* **Result / Refinement:** Claude generated a highly scalable, data-driven heuristic engine. It established a `Rule` catalogue with HIGH, MEDIUM, and LOW severity weights. I reviewed the scoring logic, which intelligently deduplicates hits by category to prevent score inflation (e.g., multiple "urgent" synonyms only count once). This creates a highly realistic, privacy-first, on-device analysis pipeline that perfectly mimics an API response.
+
 ### Entry 4: [Pending]
 ### [cite_start]Entry 5: AI Code Review [Pending] [cite: 120]
