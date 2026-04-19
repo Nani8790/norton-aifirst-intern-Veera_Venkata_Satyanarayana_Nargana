@@ -8,6 +8,12 @@ android {
     compileSdk {
         version = release(36) {
             minorApiLevel = 1
+
+        }
+    }
+    testOptions {
+        unitTests.all {
+            it.useJUnit()
         }
     }
 
@@ -51,6 +57,9 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.7.0")
     implementation("androidx.compose.material:material-icons-extended:1.6.0")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.7.0")// Or the version matching your compose BOM
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.7.3")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.7.3")
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
