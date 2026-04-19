@@ -10,6 +10,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 // ---------------------------------------------------------------------------
 // UI State — sealed hierarchy
@@ -330,7 +332,9 @@ class ScamDetectorViewModel : ViewModel() {
     private suspend fun performAnalysis(text: String) {
         try {
             delay(2_000L)
-            val result = analyzeText(text)
+            val result = withContext(Dispatchers.Default) {
+                analyzeText(text)
+            }
             _uiState.update {
                 ScamDetectorUiState.Success(inputText = text, result = result)
             }

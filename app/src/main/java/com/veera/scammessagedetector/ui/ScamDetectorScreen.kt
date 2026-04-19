@@ -258,7 +258,7 @@ private fun ScamDetectorContent(
  * Maps a label string to a contextual icon.
  * Extend this as new example categories are added.
  */
-@Composable
+
 private fun iconForExample(label: String): ImageVector = when {
     label.contains("package", ignoreCase = true) ||
             label.contains("delivery", ignoreCase = true) -> Icons.Default.LocalShipping
