@@ -51,49 +51,38 @@ Phishing and social engineering attacks succeed because victims cannot quickly i
 
 ## Screenshots
 
-### Main Screen — Idle State
-
-
-![Main Screen](images/screenshot_main.png)
-
-
-
-### Analysis Result — Radar Chart (DANGEROUS verdict)
-
-
-
-![Radar Chart Result](images/screenshot_radar_dangerous.png)
-
-
-
-### Analysis Result — Radar Chart (SUSPICIOUS verdict)
-
-![Radar Chart Suspicious](images/screenshot_radar_suspicious.png)
-
-
-
-### Forensic Loading Console
-
-
-![Forensic Console](images/screenshot_loading.png)
-
-
-
-### Deep AI Scan — Security Lab Card
-
-
-![Security Lab Deep Scan](images/screenshot_deep_scan.png)
-
-
-### Scan History — Room Database
-
-
-![Scan History](images/screenshot_history.png)
-
-
-### History Detail Dialog
-
-![History Detail Dialog](images/screenshot_history_detail.png)
+<table>
+  <tr>
+    <td align="center"><b>Main Screen — Idle</b></td>
+    <td align="center"><b>Radar Chart — DANGEROUS</b></td>
+    <td align="center"><b>Radar Chart — SUSPICIOUS</b></td>
+  </tr>
+  <tr>
+    <td><img src="images/screenshot_main.png" width="220"/></td>
+    <td><img src="images/screenshot_radar_dangerous.png" width="220"/></td>
+    <td><img src="images/screenshot_radar_suspicious.png" width="220"/></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Forensic Console</b></td>
+    <td align="center"><b>Deep AI Scan — Security Lab</b></td>
+    <td align="center"><b>Scan History — Room DB</b></td>
+  </tr>
+  <tr>
+    <td><img src="images/screenshot_loading.png" width="220"/></td>
+    <td><img src="images/screenshot_deep_scan.png" width="220"/></td>
+    <td><img src="images/screenshot_history.png" width="220"/></td>
+  </tr>
+  <tr>
+    <td align="center"><b>History Detail Dialog</b></td>
+    <td></td>
+    <td></td>
+  </tr>
+  <tr>
+    <td><img src="images/screenshot_history_detail.png" width="220"/></td>
+    <td></td>
+    <td></td>
+  </tr>
+</table>
 
 
 ## Feature Matrix
