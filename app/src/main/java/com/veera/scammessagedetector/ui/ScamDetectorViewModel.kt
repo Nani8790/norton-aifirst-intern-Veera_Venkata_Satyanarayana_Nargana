@@ -2,31 +2,49 @@ package com.veera.scammessagedetector.ui
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.veera.scammessagedetector.data.local.ScanHistoryEntity
+import com.veera.scammessagedetector.data.repository.ScamRepository
 import com.veera.scammessagedetector.model.AnalysisResult
-import com.veera.scammessagedetector.model.RiskLevel
+import com.veera.scammessagedetector.model.DeepAnalysisResult
+import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import javax.inject.Inject
 
 // ---------------------------------------------------------------------------
 // UI State — sealed hierarchy
 // ---------------------------------------------------------------------------
 
+/**
+ * Represents every possible state of the scam-detection UI.
+ *
+ * Using a sealed class (rather than multiple boolean flags) makes illegal states
+ * unrepresentable — the UI can never simultaneously show a loading spinner and a
+ * result card.
+ */
 sealed class ScamDetectorUiState {
+    /** Initial state — no analysis has been requested. */
     data object Idle : ScamDetectorUiState()
+
+    /** Heuristic engine is running; UI shows a progress indicator. */
     data object Loading : ScamDetectorUiState()
 
     /**
+     * Heuristic scan completed successfully.
+     *
      * @param inputText      The original text that was analysed.
-     * @param result         Heuristic engine verdict (always present after scan).
-     * @param isDeepScanning True while the Deep AI scan coroutine is in-flight.
-     *                       The heuristic result remains fully visible during this time.
-     * @param deepResult     Populated once the Deep AI scan completes; null before that.
+     * @param result         Heuristic engine verdict.
+     * @param isDeepScanning `true` while the Deep AI scan coroutine is in-flight.
+     *                       The heuristic result card remains fully visible during this time.
+     * @param deepResult     Populated once the Deep AI scan completes; `null` before that.
      */
     data class Success(
         val inputText: String,
@@ -35,32 +53,28 @@ sealed class ScamDetectorUiState {
         val deepResult: DeepAnalysisResult? = null,
     ) : ScamDetectorUiState()
 
+    /**
+     * An error occurred (empty input, or unexpected exception).
+     *
+     * @param message Human-readable error description surfaced via Snackbar.
+     */
     data class Error(val message: String) : ScamDetectorUiState()
 }
 
 // ---------------------------------------------------------------------------
-// Deep analysis result model
+// UI-only data model
 // ---------------------------------------------------------------------------
 
 /**
- * The output of the Deep AI scan layer.
+ * A pre-written sample message used by the "Try an example" chip strip.
  *
- * @param tactic        Primary social-engineering tactic identified
- *                      (e.g., "Urgency & Fear Induction").
- * @param riskReasoning Full paragraph explaining the AI's reasoning.
- * @param isSimulated   True in demo mode; false when a live AI model is connected.
- *                      Surface this to the user as an "AI Verified" or "Simulated" badge.
+ * This is a UI-layer model because it has no business logic and is never
+ * persisted — it exists purely to populate the input field on tap.
+ *
+ * @param label      Short display name shown on the chip card.
+ * @param senderHint Simulated sender name shown below the label.
+ * @param body       Full message body that populates the text field when selected.
  */
-data class DeepAnalysisResult(
-    val tactic: String,
-    val riskReasoning: String,
-    val isSimulated: Boolean,
-)
-
-// ---------------------------------------------------------------------------
-// Example messages
-// ---------------------------------------------------------------------------
-
 data class ExampleMessage(
     val label: String,
     val senderHint: String,
@@ -68,179 +82,58 @@ data class ExampleMessage(
 )
 
 // ===========================================================================
-//  LOCAL HEURISTIC ANALYSIS ENGINE
-// ===========================================================================
-
-private enum class Severity(val weight: Float) {
-    HIGH(0.40f),
-    MEDIUM(0.25f),
-    LOW(0.10f),
-}
-
-private data class Rule(
-    val category: String,
-    val severity: Severity,
-    val pattern: Regex,
-    val tokenize: (MatchResult) -> String = { it.value.lowercase().trim() },
-)
-
-private data class MatchedIndicator(
-    val displayToken: String,
-    val category: String,
-    val severity: Severity,
-)
-
-private const val BASE_SCORE           = 0.05f
-private const val THRESHOLD_SUSPICIOUS = 0.25f
-private const val THRESHOLD_DANGEROUS  = 0.60f
-
-private val RULES: List<Rule> = listOf(
-
-    // ── HIGH ─────────────────────────────────────────────────────────────────
-
-    Rule(
-        category = "Shortened URL",
-        severity = Severity.HIGH,
-        pattern = Regex(
-            pattern = """https?://(bit\.ly|tinyurl\.com|t\.co|goo\.gl|ow\.ly|is\.gd""" +
-                    """|buff\.ly|shorturl\.at|cutt\.ly|rb\.gy|tiny\.cc|lnkd\.in""" +
-                    """|dlvr\.it|su\.pr|tr\.im|v\.gd|b\.link|short\.io)/\S*""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-        tokenize = { match ->
-            val host = match.value.substringAfter("://").substringBefore("/")
-            "Shortened URL ($host)"
-        },
-    ),
-
-    Rule(
-        category = "Raw IP Address in URL",
-        severity = Severity.HIGH,
-        pattern = Regex(
-            pattern = """https?://(\d{1,3}\.){3}\d{1,3}(/\S*)?""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-        tokenize = { match ->
-            val ip = match.value.substringAfter("://").substringBefore("/")
-            "IP-based URL ($ip)"
-        },
-    ),
-
-    Rule(
-        category = "Suspicious Domain",
-        severity = Severity.HIGH,
-        pattern = Regex(
-            pattern = """https?://[^\s/]*[-_](secure|verify|login|update|alert|account""" +
-                    """|banking|support|confirm|validation|access|signin|recover)[^\s/]*\.[a-z]{2,6}(/\S*)?""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-        tokenize = { match ->
-            val domain = match.value.substringAfter("://").substringBefore("/")
-            "Suspicious domain ($domain)"
-        },
-    ),
-
-    // ── MEDIUM ───────────────────────────────────────────────────────────────
-
-    Rule(
-        category = "Urgency Language",
-        severity = Severity.MEDIUM,
-        pattern = Regex(
-            pattern = """\b(urgent|immediately|act now|right away|right now|asap""" +
-                    """|within \d+ (hr|hour|min|minute)s?|expires? (soon|today|in \d+)""" +
-                    """|limited time|final (warning|notice)|last chance|deadline (today|tonight))\b""",
-            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-        ),
-    ),
-
-    Rule(
-        category = "Account Threat",
-        severity = Severity.MEDIUM,
-        pattern = Regex(
-            pattern = """\b(suspend(ed|ing|ion)?|block(ed|ing)?|restrict(ed|ing|ion)?""" +
-                    """|terminat(ed|ing|ion)?|disabl(ed|ing)?|clos(ed|ing)?""" +
-                    """|lock(ed|ing|out)?|unauthori[sz]ed (access|activity|login))\b""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-    ),
-
-    Rule(
-        category = "Credential Phishing",
-        severity = Severity.MEDIUM,
-        pattern = Regex(
-            pattern = """\b(password|credentials?""" +
-                    """|verify (your )?(identity|account|details?|information)""" +
-                    """|confirm (your )?(identity|account|details?|information)""" +
-                    """|validate (your )?(account|identity|details?)""" +
-                    """|provide (your )?(details?|information|credentials?|bank|card))\b""",
-            options = setOf(RegexOption.IGNORE_CASE, RegexOption.DOT_MATCHES_ALL),
-        ),
-    ),
-
-    Rule(
-        category = "Suspicious TLD",
-        severity = Severity.MEDIUM,
-        pattern = Regex(
-            pattern = """https?://[^\s]+\.(xyz|top|click|loan|pw|cc|tk|ml|ga|cf|gq""" +
-                    """|work|online|site|website|tech|club|info|biz|live|shop|stream)(/\S*)?""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-        tokenize = { match ->
-            val tld = match.value.substringBeforeLast("/").substringAfterLast(".").take(8)
-            "Suspicious TLD (.$tld)"
-        },
-    ),
-
-    // ── LOW ──────────────────────────────────────────────────────────────────
-
-    Rule(
-        category = "Phishing Call-to-Action",
-        severity = Severity.LOW,
-        pattern = Regex(
-            pattern = """\b(click here|click (the |this |on the |on this )?link""" +
-                    """|tap here|tap (the |this )?link|follow (this |the )?link""" +
-                    """|open (this |the )?link|download now|install now|get it now)\b""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-    ),
-
-    Rule(
-        category = "Financial Bait",
-        severity = Severity.LOW,
-        pattern = Regex(
-            pattern = """\b(you('ve| have) won|congratulations you|prize|lottery""" +
-                    """|reward|claim (your|the)|free gift|cash prize""" +
-                    """|transfer funds?|wire transfer|money transfer|inheritance)\b""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-    ),
-
-    Rule(
-        category = "Impersonation Language",
-        severity = Severity.LOW,
-        pattern = Regex(
-            pattern = """\b(dear (customer|user|account.?holder|member|client|valued)""" +
-                    """|official (notice|alert|message|communication)""" +
-                    """|security (team|alert|department|notification)""" +
-                    """|customer (care|support|service)( (team|department))?""" +
-                    """|helpdesk|help desk)\b""",
-            option = RegexOption.IGNORE_CASE,
-        ),
-    ),
-)
-
-// ===========================================================================
 //  VIEWMODEL
 // ===========================================================================
 
-class ScamDetectorViewModel : ViewModel() {
+/**
+ * Owns all UI state for [ScamDetectorScreen].
+ *
+ * All business logic and data access is delegated to [ScamRepository]. The ViewModel
+ * is responsible only for:
+ *  - Orchestrating coroutine lifecycles (so work survives configuration changes).
+ *  - Mapping repository results to [ScamDetectorUiState] transitions.
+ *  - Exposing [StateFlow]s that the Compose UI collects.
+ *
+ * [@HiltViewModel] enables Hilt to manage this ViewModel's lifecycle and inject
+ * [ScamRepository] without requiring a custom [androidx.lifecycle.ViewModelProvider.Factory].
+ */
+@HiltViewModel
+class ScamDetectorViewModel @Inject constructor(
+    private val repository: ScamRepository,
+) : ViewModel() {
 
     private val _uiState = MutableStateFlow<ScamDetectorUiState>(ScamDetectorUiState.Idle)
+
+    /** The current UI state. Collected by the root [ScamDetectorScreen] composable. */
     val uiState: StateFlow<ScamDetectorUiState> = _uiState.asStateFlow()
 
     private val _inputText = MutableStateFlow("")
+
+    /** Live text field contents. Two-way binding: VM owns source of truth. */
     val inputText: StateFlow<String> = _inputText.asStateFlow()
 
+    /**
+     * Reactive history list backed by Room's [Flow]-based query.
+     *
+     * [SharingStarted.WhileSubscribed] with a 5-second timeout keeps the upstream
+     * [Flow] alive during screen rotation (configuration change restores the collector
+     * before the 5 s window expires), while cancelling it promptly when the app
+     * truly leaves the foreground.
+     */
+    val history: StateFlow<List<ScanHistoryEntity>> = repository
+        .getHistory()
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5_000),
+            initialValue = emptyList(),
+        )
+
+    /**
+     * Static list of pre-written scam examples for the chip strip.
+     *
+     * Stored in the ViewModel (not a repository) because this data is hard-coded
+     * UI copy — not business data — and does not change at runtime.
+     */
     val exampleMessages: List<ExampleMessage> = listOf(
         ExampleMessage(
             label = "Package Delivery",
@@ -259,9 +152,15 @@ class ScamDetectorViewModel : ViewModel() {
     )
 
     // -------------------------------------------------------------------------
-    // Public API — called by the UI
+    // Public API — called by the UI layer
     // -------------------------------------------------------------------------
 
+    /**
+     * Updates the input text and resets the result state to [ScamDetectorUiState.Idle]
+     * if the user modifies the field after a completed analysis.
+     *
+     * @param newText Latest value from the text field.
+     */
     fun onInputChanged(newText: String) {
         _inputText.update { newText }
         if (_uiState.value is ScamDetectorUiState.Success ||
@@ -271,10 +170,21 @@ class ScamDetectorViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Fills the input field with the body of [example] and resets the result state.
+     *
+     * Delegates to [onInputChanged] so the reset logic is not duplicated.
+     */
     fun onExampleSelected(example: ExampleMessage) {
         onInputChanged(example.body)
     }
 
+    /**
+     * Validates the input and triggers the heuristic analysis pipeline.
+     *
+     * Guards against blank input before transitioning to [ScamDetectorUiState.Loading],
+     * preventing unnecessary coroutine launches. The actual work runs in [performAnalysis].
+     */
     fun analyzeMessage() {
         val text = _inputText.value.trim()
         if (text.isBlank()) {
@@ -292,16 +202,15 @@ class ScamDetectorViewModel : ViewModel() {
     /**
      * Triggers the Deep AI scan for the currently displayed result.
      *
-     * Called by the 'Deep AI Scan' button in the UI. This function mutates the
-     * *existing* Success state in-place by setting [ScamDetectorUiState.Success.isDeepScanning]
-     * to true, so the heuristic result card stays fully visible while the AI
-     * layer runs beneath it. The top-level sealed state never changes — we stay
-     * in Success throughout.
+     * Mutates the *existing* [ScamDetectorUiState.Success] in-place by setting
+     * [ScamDetectorUiState.Success.isDeepScanning] to `true`, so the heuristic
+     * result card remains fully visible while the AI layer runs beneath it.
+     *
+     * Guards against stacked scan requests: no-ops if already scanning or if a
+     * result is already available.
      */
     fun triggerDeepScan() {
         val current = _uiState.value as? ScamDetectorUiState.Success ?: return
-
-        // Guard: don't stack scan requests.
         if (current.isDeepScanning || current.deepResult != null) return
 
         viewModelScope.launch {
@@ -313,23 +222,60 @@ class ScamDetectorViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Clears the input field and resets the UI to [ScamDetectorUiState.Idle].
+     * Does not affect persisted history.
+     */
     fun reset() {
         _inputText.update { "" }
         _uiState.update { ScamDetectorUiState.Idle }
     }
 
+    /**
+     * Removes a single history entry from the database by its primary key.
+     *
+     * @param id Primary key of the [ScanHistoryEntity] to delete.
+     */
+    fun deleteHistoryEntry(id: Long) {
+        viewModelScope.launch { repository.deleteHistoryEntry(id) }
+    }
+
+    /**
+     * Removes all scan history from the database.
+     *
+     * Should be called only after presenting a confirmation dialog to the user —
+     * this action is irreversible.
+     */
+    fun clearHistory() {
+        viewModelScope.launch { repository.clearHistory() }
+    }
+
     // -------------------------------------------------------------------------
-    // Heuristic analysis pipeline
+    // Internal analysis pipeline
     // -------------------------------------------------------------------------
 
+    /**
+     * Runs the heuristic engine on [text] and transitions the UI to
+     * [ScamDetectorUiState.Success] on completion, or [ScamDetectorUiState.Error]
+     * on failure.
+     *
+     * The 2-second [delay] simulates real processing latency and ensures the loading
+     * animation is visible — remove it once a live AI API is connected.
+     *
+     * CPU-bound regex matching is dispatched to [Dispatchers.Default] to keep
+     * the Main thread free. The subsequent [repository.saveToHistory] call runs
+     * on Room's internal IO executor via the suspend function's dispatcher.
+     *
+     * @param text Trimmed, non-blank user input.
+     */
     private suspend fun performAnalysis(text: String) {
         try {
             delay(2_000L)
-            // CPU-bound regex work runs on the Default dispatcher, keeping Main free.
-            val result = withContext(Dispatchers.Default) { analyzeText(text) }
+            val result = withContext(Dispatchers.Default) { repository.analyze(text) }
             _uiState.update {
                 ScamDetectorUiState.Success(inputText = text, result = result)
             }
+            repository.saveToHistory(text, result)
         } catch (e: Exception) {
             _uiState.update {
                 ScamDetectorUiState.Error(
@@ -339,153 +285,46 @@ class ScamDetectorViewModel : ViewModel() {
         }
     }
 
-    private fun analyzeText(text: String): AnalysisResult {
-        val allHits: List<MatchedIndicator> = RULES.flatMap { rule ->
-            rule.pattern.findAll(text).map { match ->
-                MatchedIndicator(
-                    displayToken = rule.tokenize(match),
-                    category     = rule.category,
-                    severity     = rule.severity,
-                )
-            }
-        }
-        val uniqueHits   = allHits.distinctBy { it.displayToken.lowercase() }
-        val scoringHits  = allHits.distinctBy { it.category }
-        val rawScore     = BASE_SCORE + scoringHits.sumOf { it.severity.weight.toDouble() }.toFloat()
-        val confidence   = rawScore.coerceIn(0f, 1f)
-        val riskLevel    = when {
-            confidence >= THRESHOLD_DANGEROUS  -> RiskLevel.DANGEROUS
-            confidence >= THRESHOLD_SUSPICIOUS -> RiskLevel.SUSPICIOUS
-            else                               -> RiskLevel.SAFE
-        }
-        return AnalysisResult(
-            riskLevel     = riskLevel,
-            confidence    = confidence,
-            explanation   = buildExplanation(riskLevel, scoringHits),
-            flaggedTokens = uniqueHits.map { it.displayToken },
-        )
-    }
-
-    private fun buildExplanation(riskLevel: RiskLevel, scoringHits: List<MatchedIndicator>): String {
-        if (scoringHits.isEmpty()) {
-            return "No scam indicators were detected. The message contains no urgency " +
-                    "language, account threats, suspicious links, or credential requests. " +
-                    "Always stay cautious with unsolicited messages."
-        }
-        val highHits   = scoringHits.filter { it.severity == Severity.HIGH }
-        val mediumHits = scoringHits.filter { it.severity == Severity.MEDIUM }
-        val lowHits    = scoringHits.filter { it.severity == Severity.LOW }
-        return buildString {
-            when (riskLevel) {
-                RiskLevel.DANGEROUS  -> append("This message exhibits multiple strong indicators of a phishing or scam attack. ")
-                RiskLevel.SUSPICIOUS -> append("This message contains patterns commonly associated with scam attempts. ")
-                RiskLevel.SAFE       -> append("This message has minor signals worth noting, though none are conclusive on their own. ")
-            }
-            if (highHits.isNotEmpty()) {
-                val plural = if (highHits.size > 1) "s" else ""
-                append("Critical signal$plural detected: ${highHits.joinToString(" and ") { it.category.lowercase() }}. ")
-            }
-            if (mediumHits.isNotEmpty()) {
-                val plural = if (mediumHits.size > 1) "s" else ""
-                append("Supporting indicator$plural: ${mediumHits.joinToString(", ") { it.category.lowercase() }}. ")
-            }
-            if (lowHits.isNotEmpty()) {
-                val plural = if (lowHits.size > 1) "s" else ""
-                append("Weaker signal$plural also present: ${lowHits.joinToString(", ") { it.category.lowercase() }}. ")
-            }
-            val total = scoringHits.size
-            append("$total unique indicator${if (total > 1) "s were" else " was"} matched. ")
-            when (riskLevel) {
-                RiskLevel.DANGEROUS  -> append("Do not click any links or provide personal information. If this appears to be from a known organisation, contact them directly via their official website or phone number.")
-                RiskLevel.SUSPICIOUS -> append("Treat this message with caution. Verify the sender through an official channel before clicking any links or sharing personal details.")
-                RiskLevel.SAFE       -> append("Even messages with few signals can be scams if they feel unexpected or request sensitive information.")
-            }
-        }
-    }
-
-    // =========================================================================
-    //  DEEP AI SCAN — HYBRID ANALYSIS LAYER
-    // =========================================================================
-
     /**
-     * Strips characters frequently used in Indirect Prompt Injection attacks
-     * before passing user-controlled text to an AI model.
+     * Executes the Deep AI scan layer for [text].
      *
-     * Defends against:
-     *  • Null bytes and non-printable control characters
-     *  • Zero-width characters (used to hide injected instructions)
-     *  • RTL override (used to visually disguise URLs)
-     *  • Context-window stuffing via excessive blank lines
-     */
-    private fun sanitizeInput(text: String): String = text
-        // Remove null bytes and non-printable ASCII controls (keep \t \n \r)
-        .replace(Regex("[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]"), "")
-        // Remove zero-width space, non-joiner, joiner, and BOM — prime injection vectors
-        .replace(Regex("[\u200B-\u200F\u2028\u2029\uFEFF]"), "")
-        // Remove RTL override character used to disguise malicious URLs
-        .replace("\u202E", "")
-        // Collapse 3+ consecutive blank lines → 2 (prevents context-window padding)
-        .replace(Regex("\n{3,}"), "\n\n")
-        .trim()
-
-    /**
-     * Deep AI scan pipeline.
+     * Architecture: this function is a "plug-and-play socket". The simulated block
+     * is clearly separated so connecting a live AI model requires only replacing
+     * the marked section (see [ScamRepository.simulateDeepResult] for the real
+     * integration points).
      *
-     * Architecture: this function is designed as a "plug-and-play socket".
-     * The simulated block is clearly separated from the real integration point
-     * so connecting a live model requires only replacing the marked section.
+     * Threading: runs on [Dispatchers.IO] because the real implementation will
+     * be a network call. [MutableStateFlow.update] is thread-safe, so the state
+     * update inside the IO block is safe.
      *
-     * Threading: the entire function runs on [Dispatchers.IO] because a real
-     * AI SDK call is a network operation. The state update is posted back
-     * to the StateFlow from whatever thread calls [update] — that is safe
-     * because [MutableStateFlow.update] is thread-safe.
+     * On failure: the scanning flag is cleared but the heuristic result is preserved.
+     * A production app should also emit a one-shot error event via a [kotlinx.coroutines.channels.Channel].
+     *
+     * @param text The original unsanitized input text from the heuristic result.
      */
     private suspend fun performDeepScan(text: String) {
         try {
-            val sanitizedText = sanitizeInput(text)
-
+            val sanitized = repository.sanitize(text)
             withContext(Dispatchers.IO) {
-
-                // ─────────────────────────────────────────────────────────────
-                // REAL AI INTEGRATION SOCKET
+                // ── REAL AI INTEGRATION SOCKET ────────────────────────────────
+                // Replace the simulated delay + simulateDeepResult() call below with:
                 //
-                // OPTION A — Google Gemini (google-ai-generativelanguage SDK):
-                //
-                //   val generativeModel = GenerativeModel(
-                //       modelName = "gemini-1.5-pro",
-                //       apiKey    = BuildConfig.GEMINI_API_KEY,
-                //   )
-                //   val prompt   = buildAiPrompt(sanitizedText)
-                //   val response = generativeModel.generateContent(prompt)
+                // OPTION A — Google Gemini:
+                //   val model = GenerativeModel("gemini-1.5-pro", BuildConfig.GEMINI_API_KEY)
+                //   val response = model.generateContent(buildAiPrompt(sanitized))
                 //   val deepResult = parseAiResponse(response.text ?: "")
                 //
-                // OPTION B — OpenAI (openai-kotlin SDK):
-                //
-                //   val response = openAiClient.chatCompletion(
-                //       request = ChatCompletionRequest(
-                //           model    = ModelId("gpt-4o"),
-                //           messages = listOf(
-                //               ChatMessage(role = Role.System, content = SYSTEM_PROMPT),
-                //               ChatMessage(role = Role.User,   content = sanitizedText),
-                //           ),
-                //       )
-                //   )
-                //   val deepResult = parseAiResponse(
-                //       response.choices.first().message.content.orEmpty()
-                //   )
-                //
-                // TODO: Uncomment one of the blocks above, delete the simulated
-                //       delay + buildSimulatedDeepResult call below, and implement
-                //       parseAiResponse() to deserialise the model's JSON output
-                //       into a DeepAnalysisResult.
+                // OPTION B — OpenAI:
+                //   val response = openAiClient.chatCompletion(ChatCompletionRequest(
+                //       model = ModelId("gpt-4o"),
+                //       messages = listOf(systemMessage, ChatMessage(Role.User, sanitized))
+                //   ))
+                //   val deepResult = parseAiResponse(response.choices.first().message.content.orEmpty())
                 // ─────────────────────────────────────────────────────────────
 
-                // ── SIMULATED RESPONSE (remove when real AI is connected) ────
-                delay(3_000L) // mirrors real LLM cold-start latency
-                val deepResult = buildSimulatedDeepResult(sanitizedText)
-                // ── END SIMULATED BLOCK ──────────────────────────────────────
+                delay(3_000L)
+                val deepResult = repository.simulateDeepResult(sanitized)
 
-                // Post result back — update() is thread-safe on MutableStateFlow
                 _uiState.update { current ->
                     (current as? ScamDetectorUiState.Success)?.copy(
                         isDeepScanning = false,
@@ -494,83 +333,10 @@ class ScamDetectorViewModel : ViewModel() {
                 }
             }
         } catch (e: Exception) {
-            // On failure: clear the scanning flag but keep the heuristic result.
-            // A real app should also emit a one-shot error event (SharedFlow/Channel).
             _uiState.update { current ->
                 (current as? ScamDetectorUiState.Success)
                     ?.copy(isDeepScanning = false) ?: current
             }
         }
     }
-
-    /**
-     * Produces a contextually appropriate simulated [DeepAnalysisResult] by
-     * inspecting the sanitized text for dominant social-engineering signals.
-     *
-     * Replace this function with a real AI response parser once the integration
-     * socket above is wired up.
-     */
-    private fun buildSimulatedDeepResult(text: String): DeepAnalysisResult {
-        val lower = text.lowercase()
-        return when {
-            lower.containsAny("urgent", "immediately", "suspended", "locked") ->
-                DeepAnalysisResult(
-                    tactic = "Urgency & Fear Induction",
-                    riskReasoning = "The message employs high-pressure social engineering by " +
-                            "creating an artificial time constraint and threatening adverse " +
-                            "consequences (account suspension or loss of access). This tactic " +
-                            "bypasses the target's rational decision-making by triggering a stress " +
-                            "response, pushing them to act impulsively before verifying the sender's " +
-                            "legitimacy. It is one of the most reliable vectors in credential-phishing " +
-                            "campaigns targeting financial accounts.",
-                    isSimulated = true,
-                )
-            lower.containsAny("verify", "confirm", "validate", "identity", "credentials") ->
-                DeepAnalysisResult(
-                    tactic = "Authority Impersonation & Credential Harvesting",
-                    riskReasoning = "The message impersonates a trusted institution and requests " +
-                            "identity verification through an attacker-controlled channel. The phrasing " +
-                            "deliberately mirrors legitimate security communication to establish false " +
-                            "authority — a hallmark of spear-phishing campaigns. The goal is to route " +
-                            "the target to a cloned login page where credentials are silently exfiltrated.",
-                    isSimulated = true,
-                )
-            lower.containsAny("won", "prize", "lottery", "reward", "claim", "inheritance") ->
-                DeepAnalysisResult(
-                    tactic = "Advance-Fee & Reward Fraud",
-                    riskReasoning = "The message baits the target with a fabricated financial reward " +
-                            "contingent on taking an action. This is consistent with advance-fee fraud " +
-                            "(419/Nigerian prince scam) or lottery-fraud templates. The attacker's " +
-                            "objective is to extract personal information or a small upfront 'processing " +
-                            "fee' in exchange for a promised but entirely fictitious reward.",
-                    isSimulated = true,
-                )
-            lower.containsAny("package", "delivery", "shipment", "parcel", "usps", "fedex", "dhl") ->
-                DeepAnalysisResult(
-                    tactic = "Delivery Impersonation Phishing",
-                    riskReasoning = "This message mimics a legitimate parcel carrier notification to " +
-                            "exploit the high baseline expectation of online deliveries. The false " +
-                            "'delivery failed' scenario creates urgency and plausibility in equal measure, " +
-                            "directing the target to a phishing page engineered to capture address details, " +
-                            "payment card information, or account credentials under the guise of resolving " +
-                            "a non-existent shipping issue.",
-                    isSimulated = true,
-                )
-            else ->
-                DeepAnalysisResult(
-                    tactic = "Multi-Vector Social Engineering",
-                    riskReasoning = "The message combines several social-engineering vectors — false " +
-                            "authority, urgency signals, and a deceptive call-to-action — without relying " +
-                            "heavily on any single one. This breadth suggests a targeted, iteratively " +
-                            "tested phishing template rather than opportunistic spam. The attacker's " +
-                            "primary objective appears to be credential theft, with malware delivery as " +
-                            "a secondary vector via the linked destination.",
-                    isSimulated = true,
-                )
-        }
-    }
-
-    // Convenience extension to keep the `when` branches above readable.
-    private fun String.containsAny(vararg keywords: String): Boolean =
-        keywords.any { this.contains(it, ignoreCase = true) }
 }
