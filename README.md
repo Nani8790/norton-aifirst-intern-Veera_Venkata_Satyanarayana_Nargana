@@ -26,7 +26,15 @@
 
 ## Project Overview
 
-This is a **production-architecture scam detection application** built for the Gen Digital AI-First Mobile Engineering Intern take-home assignment. It goes significantly beyond a prototype: it implements a full **Hybrid AI pipeline** (on-device heuristic engine + a wired LLM integration socket), **Explainable AI** via a custom Canvas-drawn Radar Chart, **Room-backed persistent scan history**, and a complete **Hilt dependency injection graph** — all validated by a JVM unit test suite that runs without an emulator.
+This is a **production-architecture scam detection application** built for the
+Gen Digital AI-First Mobile Engineering Intern take-home assignment. It goes
+significantly beyond a prototype: it implements a full **Hybrid AI pipeline**
+(on-device heuristic engine + a wired LLM integration socket), **Explainable AI**
+via a custom Canvas-drawn Radar Chart, **Room-backed persistent scan history**, and
+a complete **Hilt dependency injection graph** — with the core heuristic engine and
+ViewModel state machine fully validated by a JVM unit test suite that runs without
+an emulator.
+
 
 ### The core problem
 
@@ -48,92 +56,48 @@ Phishing and social engineering attacks succeed because victims cannot quickly i
 
 ### Main Screen — Idle State
 
-```
-[PLACEHOLDER: Screenshot of the main screen showing the dark Security Lab theme,
-the two horizontal example message chips (Package Delivery, Bank Alert),
-and the empty text input card with the "Analyze Message" button.]
-```
 
 ![Main Screen](images/screenshot_main.png)
 
----
+
 
 ### Analysis Result — Radar Chart (DANGEROUS verdict)
 
-```
-[PLACEHOLDER: Screenshot of the result card after analyzing the "Bank Alert" example.
-Must clearly show the 4-axis Canvas Radar Chart with the Urgency and Link Malice
-axes extended near maximum, the red "DANGEROUS" risk badge, the confidence percentage,
-and the "Flagged signals" token chips. This is the most important screenshot.]
-```
+
 
 ![Radar Chart Result](images/screenshot_radar_dangerous.png)
 
----
+
 
 ### Analysis Result — Radar Chart (SUSPICIOUS verdict)
 
-```
-[PLACEHOLDER: Screenshot showing a SUSPICIOUS result with only one or two axes
-partially extended on the radar chart — demonstrating that the chart correctly
-shows PARTIAL threat vectors, not all-or-nothing.]
-```
-
 ![Radar Chart Suspicious](images/screenshot_radar_suspicious.png)
 
----
+
 
 ### Forensic Loading Console
 
-```
-[PLACEHOLDER: Screenshot captured mid-analysis showing the ForensicLoadingCard.
-The dark console panel must be visible with several green/cyan monospaced log lines
-appearing (e.g., "> NFA PATTERN MATCHING [O(N·M)]", "> COMPUTING RADAR SIGNATURE")
-and the blinking block cursor. This demonstrates the animated UX.]
-```
 
 ![Forensic Console](images/screenshot_loading.png)
 
----
+
 
 ### Deep AI Scan — Security Lab Card
 
-```
-[PLACEHOLDER: Screenshot showing the full result card after triggering "Deep AI Scan"
-on a DANGEROUS message. The dark Security Lab panel must be visible at the bottom
-showing the "PRIMARY TACTIC" label (e.g., "Urgency & Fear Induction"), the risk
-reasoning paragraph, and the "SIMULATED" or "AI VERIFIED" badge.]
-```
 
 ![Security Lab Deep Scan](images/screenshot_deep_scan.png)
 
----
 
 ### Scan History — Room Database
 
-```
-[PLACEHOLDER: Screenshot showing the "Scan History" card at the bottom of the screen
-with 2-3 past scan entries. Each entry must show the colored risk dot, the verdict
-label, the timestamp, and — critically — BOTH the cyan "view details" info icon AND
-the grey delete icon side-by-side, demonstrating the two distinct actions.]
-```
 
 ![Scan History](images/screenshot_history.png)
 
----
 
 ### History Detail Dialog
 
-```
-[PLACEHOLDER: Screenshot showing the AlertDialog that appears after tapping the
-cyan info icon on a history entry. The dialog must show the full message text in
-a surface card, the confidence percentage, the full explanation paragraph, and
-the flagged signal token chips.]
-```
-
 ![History Detail Dialog](images/screenshot_history_detail.png)
 
----
 
 ## Feature Matrix
 
@@ -606,8 +570,3 @@ private fun iconForExample(label: String): ImageVector { ... }
 // After
 private fun iconForExample(label: String): ImageVector { ... }
 ```
-
----
-
-*README generated with technical assistance from Claude Sonnet 4.6 (Anthropic).*
-*All architectural decisions, code review findings, and AI Interaction Log entries are the original work of the candidate.*
