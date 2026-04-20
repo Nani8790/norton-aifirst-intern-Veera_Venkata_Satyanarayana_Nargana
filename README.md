@@ -51,9 +51,6 @@ Phishing and social engineering attacks succeed because victims cannot quickly i
 
 ## Screenshots
 
-> **Action required:** Run the app, trigger each state below, and replace the placeholders with real screenshots.
-> Drag images into the GitHub web editor or commit them to an `images/` folder.
-
 ### Main Screen — Idle State
 
 
