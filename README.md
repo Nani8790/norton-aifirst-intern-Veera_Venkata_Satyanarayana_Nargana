@@ -9,18 +9,20 @@
 ## Table of Contents
 
 1. [Project Overview](#project-overview)
-2. [Screenshots](#screenshots)
-3. [Feature Matrix](#feature-matrix)
-4. [Architecture](#architecture)
-5. [Tech Stack](#tech-stack)
-6. [Key Engineering Decisions](#key-engineering-decisions)
-7. [Heuristic Engine — Complexity Analysis](#heuristic-engine--complexity-analysis)
-8. [Testing Strategy](#testing-strategy)
-9. [Gemini API Integration Socket](#gemini-api-integration-socket)
-10. [Setup Instructions](#setup-instructions)
-11. [Future Enhancements](#future-enhancements)
-12. [AI Interaction Log](#ai-interaction-log)
-13. [AI Code Review](#ai-code-review)
+2. [Demo Video](#demo-video)
+3. [Screenshots](#screenshots)
+4. [Feature Matrix](#feature-matrix)
+5. [Architecture](#architecture)
+6. [Tech Stack](#tech-stack)
+7. [Key Engineering Decisions](#key-engineering-decisions)
+8. [Heuristic Engine — Complexity Analysis](#heuristic-engine--complexity-analysis)
+9. [Testing Strategy](#testing-strategy)
+10. [Gemini API Integration Socket](#gemini-api-integration-socket)
+11. [Setup Instructions](#setup-instructions)
+12. [Future Enhancements](#future-enhancements)
+13. [AI Interaction Log](#ai-interaction-log)
+14. [AI Code Review](#ai-code-review)
+15. [Reflection](#reflection)
 
 ---
 
@@ -48,6 +50,14 @@ Phishing and social engineering attacks succeed because victims cannot quickly i
 | **Tier 2 — Deep AI Scan** | Gemini API socket (live or simulated) | ~3 s | Sanitized text only |
 
 ---
+
+## Demo Video
+
+> **Video walkthrough** covering app demo, code architecture, and AI workflow.
+
+[![Demo Video](https://www.loom.com/share/8109787d259e46dfa9e3b6a53f0a4078)]
+
+--------
 
 ## Screenshots
 
@@ -556,3 +566,79 @@ private fun iconForExample(label: String): ImageVector { ... }
 // After
 private fun iconForExample(label: String): ImageVector { ... }
 ```
+
+---
+
+## Reflection
+
+### What I Learned
+
+#### 1. Norton Genie exploration shaped every major design decision
+
+Before writing a single line of code, I spent time in the Norton 360 app exploring Norton Genie — the closest real-world equivalent to what I was about to build. Several observations directly influenced the architecture:
+
+**What I observed in Norton Genie:**
+- Conversational UI — the user pastes text and gets instant, colour-coded feedback (green / yellow / red), which I replicated with `RiskLevel.SAFE / SUSPICIOUS / DANGEROUS` and the security colour palette
+- Genie explains *why* something is suspicious, not just flags it — I replicated this with the `explanation` field in `AnalysisResult` and the "Why this verdict?" card
+- The app feels instant — knowing Genie targets perceived immediacy, I added a forensic animation during the 2-second heuristic scan so the wait feels purposeful rather than frozen
+- Results are self-contained — no navigation required to understand the verdict
+
+**The UX gap I identified and addressed:**
+Genie returns a verdict and a paragraph, but gives no visual breakdown of *which attack vector* is active. Is the risk the link? The urgency wording? The brand impersonation? You get a red label and a sentence. That gap directly motivated the Radar Chart — four independently animated axes (Urgency, Link Malice, Financial Bait, Credential Request) let the user's eyes land on the spike before they read a word.
+
+**What I would improve in Norton Genie (and built here):**
+- **Offline mode** — basic regex detection for obvious scams when there is no network. This app's Tier 1 heuristic engine works fully on-device with zero connectivity
+- **Scan history** — Genie has no record of previously analysed messages. This app persists every scan to a Room database with a reactive history panel
+
+This is the core principle of **Explainable AI (XAI)**: the model's output should be self-describing. Norton Genie is excellent at catching scams; surfacing *why* at a glance — and working offline — is the next frontier.
+
+#### 2. Architecture patterns exist because of real pain, not academic preference
+
+I had read about MVVM and the Repository Pattern before, but implementing Hilt DI from scratch made it visceral. When I wrote `FakeScanHistoryDao` for the unit tests, I realised the Repository Pattern wasn't a formality — it was the reason I could test the full heuristic engine and ViewModel state machine on a plain JVM in milliseconds, with no emulator, no Room, and no Android runtime. That test suite is trustworthy *because* the ViewModel has never seen a real database. Dependency injection made the seam. Without it, I'd be testing screenshots.
+
+The same insight applied to the sealed `ScamDetectorUiState`: the first time the compiler caught me handling `Success` in a branch where I'd left out `Error`, I understood why sealed classes are not just a style preference. The type system eliminates an entire category of runtime crash.
+
+#### 3. AI tools are a multiplier, not a replacement — and the delta is prompt quality
+
+Every significant architectural decision in this project went through Claude — scaffolding, the scoring engine, the test suite, the Radar Chart, the Gemini integration socket. The output quality varied enormously based on how much context I provided. A vague prompt like *"write a regex scam detector"* produced generic, untestable code. A structured prompt that specified the data model, threading constraints, test strategy, and target complexity produced production-grade output on the first try.
+
+The skill is not in knowing how to use the AI. It's in knowing enough to brief it like a senior engineer, spot the gaps in its output, and close them with targeted follow-up prompts. The AI Code Review section documents two cases where Claude's initial output was subtly wrong and I had to iterate to correct it — the `@Composable` annotation finding and the off-thread regex call. Blind acceptance of AI output would have shipped both bugs.
+
+#### 4. Security is about adversarial thinking, not just feature coverage
+
+Writing `sanitize()` forced a mindset shift. The question stopped being *"does this work for normal input?"* and became *"what is the most creative way to break this?"* Zero-width characters are invisible in every text editor but fully visible to an LLM. The RTL override character makes `evil.exe` render as `exe.live` in UI. These aren't edge cases — they are documented attack techniques used in real phishing campaigns. Building the defence requires knowing the offence.
+
+This is the gap between a feature and a security feature: a scam detector that can be bypassed by a one-character prepend is not a detector at all.
+
+#### 5. Reactive data flow is not a UI concern — it's an architectural discipline
+
+The `Flow<List<ScanHistoryEntity>>` from Room with `SharingStarted.WhileSubscribed(5_000)` looks like plumbing. What it actually is: a guarantee that the history list is always consistent with the database, with no polling, no manual refresh, and no race condition. The 5-second timeout keeps the upstream alive during screen rotation — the new Activity re-subscribes and instantly gets the cached value without a database round-trip. Understanding *why* that number is 5 seconds (it matches the typical Activity recreation window) was the moment the StateFlow pattern clicked for me beyond its surface syntax.
+
+---
+
+### What I Would Do Differently
+
+#### 1. Wire the Gemini API from day one, not as a socket
+
+I architected `performDeepScan()` as a working socket — the structure, the system prompt, the JSON response parsing are all there — but the actual `GenerativeModel` call is behind a comment block pending a production API key strategy. In hindsight, I would have wired a backend proxy on day one, even a simple Cloud Function that holds the key server-side. Shipping with `BuildConfig.GEMINI_API_KEY` baked into the APK is not acceptable for a production Norton product, and I knew that before I started. The proxy should have been the first commit, not a future enhancement.
+
+#### 2. Add Room database migration from the start
+
+`ScamDatabase` is currently at version 1 with `exportSchema = false`. Any schema change — adding a column, renaming a field — would either crash existing users or require a destructive `fallbackToDestructiveMigration()`. A production app at Norton would have migration scripts from version 1 onwards, schema export enabled, and a migration test. This is the kind of technical debt that costs three days of debugging after a point release.
+
+#### 3. Write instrumented tests for the DAO alongside unit tests
+
+The JVM test suite proves the heuristic engine and ViewModel state machine are correct. It does not prove that the actual SQL queries in `ScanHistoryDao` work. `observeAll()` returning a `Flow` sorted by `timestamp DESC`, `deleteById()` deleting exactly one row, `deleteAll()` clearing the table — these need an instrumented test against a real in-memory Room database. I would schedule these on day 3, not treat them as "future work".
+
+#### 4. Store per-axis scores in the Room entity
+
+`ScanHistoryEntity` stores `flaggedTokens` as a pipe-delimited string but has no column for `axisScores`. This means the Radar Chart is only available for the *current* session result — if you open a history entry's detail dialog, you see the explanation and token chips, but not the radar visualisation. Storing the four axis floats as four nullable columns would make the detail view as rich as the live result. The schema is simple; I just didn't plan for it in the initial entity design.
+
+#### 5. Add a proper onboarding flow referencing real Norton Genie
+
+Norton Genie has brand recognition among security-conscious users. An onboarding card on first launch — "This works like Norton Genie but runs on-device with zero data sharing" — would immediately frame the app's value proposition for a user who already trusts the Norton brand. Feature context is a UX feature. I would write that copy on day 1 before writing any code, because it forces clarity about what the app actually is for.
+
+---
+
+*Built with Kotlin, Jetpack Compose, Hilt, Room, and Claude AI.*
+*Gen Digital AI-First Mobile Engineering Internship — Option B Submission.*

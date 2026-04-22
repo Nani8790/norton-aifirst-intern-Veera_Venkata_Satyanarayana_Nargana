@@ -285,6 +285,18 @@ class ScamDetectorViewModel @Inject constructor(
         }
     }
 
+    /** Builds the system-prompted JSON request sent to the Gemini model. */
+    private fun buildAiPrompt(text: String): String =
+        "Analyze this message for scam indicators. Respond in JSON only: " +
+        "{\"tactic\":\"...\",\"riskReasoning\":\"...\"}\n\nMessage: $text"
+
+    /** Parses the raw JSON string returned by the AI into a [DeepAnalysisResult]. */
+    private fun parseAiResponse(json: String): DeepAnalysisResult {
+        val tactic = Regex("\"tactic\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.get(1) ?: "Unknown"
+        val reason = Regex("\"riskReasoning\"\\s*:\\s*\"([^\"]+)\"").find(json)?.groupValues?.get(1) ?: json
+        return DeepAnalysisResult(tactic = tactic, riskReasoning = reason, isSimulated = false)
+    }
+
     /**
      * Executes the Deep AI scan layer for [text].
      *
@@ -322,7 +334,18 @@ class ScamDetectorViewModel @Inject constructor(
                 //   val deepResult = parseAiResponse(response.choices.first().message.content.orEmpty())
                 // ─────────────────────────────────────────────────────────────
 
-                delay(3_000L)
+                // ── SIMULATION (comment out when using real API) ──────────────
+//                delay(3_000L)
+//                val deepResult = repository.simulateDeepResult(sanitized)
+                // ─────────────────────────────────────────────────────────────
+
+                // ── LIVE GEMINI CALL (uncomment when API key is configured) ───
+//                val model = GenerativeModel("gemini-1.5-flash", BuildConfig.GEMINI_API_KEY)
+//                val response = model.generateContent(buildAiPrompt(sanitized))
+//                val deepResult = parseAiResponse(response.text ?: "")
+                // ─────────────────────────────────────────────────────────────
+
+                // Remove this line once you uncomment the Gemini block above:
                 val deepResult = repository.simulateDeepResult(sanitized)
 
                 _uiState.update { current ->
