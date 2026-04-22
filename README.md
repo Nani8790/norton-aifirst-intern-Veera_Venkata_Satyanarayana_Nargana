@@ -55,7 +55,7 @@ Phishing and social engineering attacks succeed because victims cannot quickly i
 
 > **Video walkthrough** covering app demo, code architecture, and AI workflow.
 
-[![Demo Video](https://www.loom.com/share/8109787d259e46dfa9e3b6a53f0a4078)]
+[[Demo Video](https://www.loom.com/share/8109787d259e46dfa9e3b6a53f0a4078)]
 
 --------
 
